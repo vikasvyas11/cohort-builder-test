@@ -49,10 +49,8 @@ Please ensure, comparisons contains m and u probabilities.
 - Precision-Recall curve and CRL (Composite Reliability of Linkage) score
 <<<<<<< Updated upstream
 - Full metrics suite covering linkage-metrics examples 0–16
-=======
 - Clickable sidebar navigation with back button and jump-to-export shortcut
 - Full metrics suite covering linkage-metrics: match weight histogram, gamma scores, cluster size distribution, confusion matrix, Venn diagram, inter-run edge comparison
->>>>>>> Stashed changes
 - SeRP-style downloadable PDF report with nine sections
 
 ---
