@@ -750,8 +750,12 @@ def compute_inter_metrics(
     results["cluster_sizes_run1"]= con.sql(q_cluster_size_distribution("df_cluster_run1")).df()
     results["cluster_sizes_run2"]= con.sql(q_cluster_size_distribution("df_cluster_run2")).df()
 
-    # Gamma comparison
-    gamma_cols = [c for c in df_predict_run1.columns if c.startswith("gamma_")]
+    # Gamma comparison — only include columns present in BOTH run predictions.
+    # Deterministic linkage produces no gamma_ columns, so the intersection
+    # may be empty. Querying a column that doesn't exist raises BinderException.
+    gamma_run1 = {c for c in df_predict_run1.columns if c.startswith("gamma_")}
+    gamma_run2 = {c for c in df_predict_run2.columns if c.startswith("gamma_")}
+    gamma_cols  = sorted(gamma_run1 & gamma_run2)   # intersection only
     if gamma_cols:
         g_agg = ", ".join([f"ROUND(AVG({c}), 4) AS {c}" for c in gamma_cols])
         gdf1  = con.sql(f"SELECT 'Run 1' AS run, {g_agg} FROM df_predict_run1").df()
