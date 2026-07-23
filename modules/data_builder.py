@@ -258,6 +258,161 @@ def _introduce_fakeb_errors(fakeb: pd.DataFrame) -> pd.DataFrame:
 # PUBLIC API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def load_nc_voter_dataset(max_rows: int = 200_000) -> tuple:
+    """Load NC voter registration + history, return (fakea, fakeb).
+
+    Registration (Dataset A) and History (Dataset B) are streamed from
+    the NC State Board of Elections public FTP in tab-delimited format.
+    Only the first max_rows rows of each file are loaded to stay within
+    memory limits for the MVP.
+
+    Linkage key: NCID (present in both files).
+    If the download fails for any reason, raises RuntimeError with a
+    human-readable message so the UI can show a clean error.
+    """
+    import io
+    import urllib.request
+
+    REG_URL  = "https://s3.amazonaws.com/dl.ncsbe.gov/data/ncvoter_Statewide.txt"
+    HIST_URL = "https://s3.amazonaws.com/dl.ncsbe.gov/data/ncvhis_Statewide.txt"
+
+    def _stream_tsv(url: str, n: int) -> pd.DataFrame:
+        try:
+            req = urllib.request.urlopen(url, timeout=30)
+            rows, header = [], None
+            for raw in req:
+                line = raw.decode("latin-1").rstrip("\r\n")
+                if header is None:
+                    header = line.split("\t")
+                    continue
+                rows.append(line.split("\t"))
+                if len(rows) >= n:
+                    break
+            return pd.DataFrame(rows, columns=header)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not download NC voter data from {url}.\n"
+                f"Check your internet connection. Details: {exc}"
+            )
+
+    reg  = _stream_tsv(REG_URL,  max_rows)
+    hist = _stream_tsv(HIST_URL, max_rows)
+
+    # ── Normalise column names (lowercase + underscores) ─────────────────────
+    reg.columns  = [c.strip().lower().replace(" ", "_") for c in reg.columns]
+    hist.columns = [c.strip().lower().replace(" ", "_") for c in hist.columns]
+
+    # ── Assign required Splink columns ────────────────────────────────────────
+    reg["source_dataset"]  = "A"
+    hist["source_dataset"] = "B"
+
+    # unique_id: use ncid if present, else voter_reg_num, else row index
+    def _assign_uid(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
+        df = df.copy()
+        for candidate in ("ncid", "voter_reg_num"):
+            if candidate in df.columns:
+                df["unique_id"] = df[candidate].astype(str)
+                break
+        else:
+            df["unique_id"] = prefix + "_" + pd.Series(range(len(df))).astype(str)
+        if prefix == "B":
+            df["unique_id"] = df["unique_id"].astype(str) + "_B"
+        return df
+
+    reg  = _assign_uid(reg,  "A")
+    hist = _assign_uid(hist, "B")
+
+    # ── Synthetic cluster column for ground-truth linkage evaluation ──────────
+    # Records with the same ncid are the same real person across the two files.
+    if "ncid" in reg.columns:
+        reg["cluster"] = reg["ncid"].astype(str)
+    else:
+        reg["cluster"] = reg["unique_id"].astype(str)
+
+    if "ncid" in hist.columns:
+        hist["cluster"] = hist["ncid"].astype(str)
+    else:
+        hist["cluster"] = hist["unique_id"].str.replace("_B", "", regex=False)
+
+    return reg, hist
+
+
+def load_nc_voter_dataset(max_rows: int = 200_000) -> tuple:
+    """Stream the NC voter registry CSV from the repo's main branch on GitHub.
+
+    The file voter_registry.csv lives in the root of the main branch.
+    Only the first max_rows rows are loaded to stay within memory limits.
+    Returns (fakea, fakeb) where:
+      fakea = voter registration records (Dataset A)
+      fakeb = None   (the caller at page_operation() will decide whether to link)
+
+    After loading, the full EDA pipeline from eda_engine.run_full_eda() is run
+    so the NC data goes through identical cleaning to uploaded datasets.
+    """
+    import io
+    import urllib.request
+    from modules.eda_engine import run_full_eda
+
+    # Raw URL for the CSV in the main branch of the GitHub repo
+    GITHUB_RAW_URL = (
+        "https://github.com/vikasvyas11/cohort-builder-test/blob/main/voter_registry.csv"
+    )
+
+    try:
+        with urllib.request.urlopen(GITHUB_RAW_URL, timeout=60) as resp:
+            raw = resp.read()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not download voter_registry.csv from GitHub.\n"
+            f"URL tried: {GITHUB_RAW_URL}\n"
+            f"Details: {exc}"
+        )
+
+    # Parse — try comma first, then tab
+    df_raw = None
+    for sep in (",", "\t", ";"):
+        try:
+            candidate = pd.read_csv(
+                io.BytesIO(raw), sep=sep, nrows=max_rows,
+                dtype=str, encoding="latin-1", on_bad_lines="skip",
+            )
+            if candidate.shape[1] > 1:
+                df_raw = candidate
+                break
+        except Exception:
+            continue
+
+    if df_raw is None or df_raw.empty:
+        raise RuntimeError("voter_registry.csv could not be parsed as CSV or TSV.")
+
+    # ── Run the same EDA pipeline used for uploaded datasets ─────────────────
+    # This standardises column names, removes nulls, deduplicates, cleans text,
+    # and standardises dates — identical to what the Upload flow does.
+    df_clean, field_types, _, eda_log = run_full_eda(df_raw.copy())
+
+    # ── Assign Splink-required columns ────────────────────────────────────────
+    df_clean["source_dataset"] = "A"
+
+    # unique_id: prefer ncid or voter_reg_num
+    uid_assigned = False
+    for candidate in ("ncid", "voter_reg_num"):
+        if candidate in df_clean.columns:
+            df_clean["unique_id"] = df_clean[candidate].astype(str)
+            uid_assigned = True
+            break
+    if not uid_assigned:
+        df_clean.insert(0, "unique_id",
+                        "NC_" + pd.Series(range(len(df_clean))).astype(str))
+
+    # ── Ground-truth cluster: same ncid = same person ─────────────────────────
+    if "ncid" in df_clean.columns:
+        df_clean["cluster"] = df_clean["ncid"].astype(str)
+    else:
+        df_clean["cluster"] = df_clean["unique_id"].astype(str)
+
+    return df_clean, field_types, eda_log
+
+
 def build_datasets() -> tuple:
     """Build and return (fake1000_df, fakea, fakeb) as pandas DataFrames.
 

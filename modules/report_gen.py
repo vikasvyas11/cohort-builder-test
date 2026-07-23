@@ -1,6 +1,6 @@
 # =============================================================================
 # modules/report_gen.py
-# PURPOSE: SeRP-style PDF report following the exact prescribed structure:
+# PURPOSE: PDF Report following the exact prescribed structure:
 #   1. Dataset information (both datasets) + completeness chart
 #   2. Blocking rules + cumulative comparison count chart
 #   3. Comparison methods
@@ -74,7 +74,7 @@ def _png(fig) -> bytes:
 # ── Chart 1: Column completeness ─────────────────────────────────────────────
 def chart_completeness(miss_a: dict, miss_b: Optional[dict] = None) -> bytes:
     """Grouped bar chart of field completeness (%) per dataset.
-    Mirrors 'Column completeness by source dataset' from the SeRP report."""
+    Mirrors 'Column completeness by source dataset' from the Linkage report."""
     fields = list(miss_a.keys())
     x      = np.arange(len(fields))
     has_b  = bool(miss_b)
@@ -115,7 +115,7 @@ def chart_completeness(miss_a: dict, miss_b: Optional[dict] = None) -> bytes:
 # ── Chart 2: Cumulative blocking rule comparison count ───────────────────────
 def chart_cumulative_blocking(blocking_counts: list) -> bytes:
     """Horizontal stacked bar showing cumulative comparisons per blocking rule.
-    Mirrors 'Cumulative count of blocking rules' from the SeRP report."""
+    Mirrors 'Cumulative count of blocking rules' from the Linkage report."""
     if not blocking_counts:
         return b""
 
@@ -250,7 +250,7 @@ def chart_parameter_estimates(model_params: dict) -> bytes:
 # ── Chart 5: Unlinkable records ───────────────────────────────────────────────
 def chart_unlinkables(unlinkables: dict) -> bytes:
     """Line chart of % unlinkable records vs match-weight threshold.
-    Mirrors 'Unlinkable records' chart from the SeRP report."""
+    Mirrors 'Unlinkable records' chart from the Linkage report."""
     thresholds = unlinkables.get("thresholds", [])
     pcts       = unlinkables.get("pcts", [])
     if not thresholds:
@@ -477,8 +477,8 @@ def chart_precision_recall(truth_space_df: pd.DataFrame) -> bytes:
 # ── PDF CLASS ─────────────────────────────────────────────────────────────────
 # =============================================================================
 
-class _SeRPReport(FPDF):
-    """fpdf2 subclass with SeRP-style layout helpers."""
+class _LinkageReport(FPDF):
+    """fpdf2 subclass with layout helpers."""
 
     def __init__(self, run_label: str = "Run 1"):
         super().__init__(orientation="P", unit="mm", format="A4")
@@ -492,7 +492,7 @@ class _SeRPReport(FPDF):
             return
         self.set_font("Helvetica", "I", 8)
         self.set_text_color(*SLATE)
-        self.cell(0, 5, "SeRP Linkage Report  |  Splink Cohort Builder", align="L")
+        self.cell(0, 5, "Linkage Report  |  Cohort Builder", align="L")
         self.ln(1)
         self.set_draw_color(*BLUE)
         self.set_line_width(0.25)
@@ -593,7 +593,7 @@ def _cover(pdf, run_config, run_label):
     pdf.set_font("Helvetica", "B", 26)
     pdf.set_text_color(*NAVY)
     pdf.ln(22)
-    pdf.cell(0, 14, "SeRP Linkage Report", align="C", ln=True)
+    pdf.cell(0, 14, "Linkage Report", align="C", ln=True)
     pdf.set_font("Helvetica", "B", 17)
     pdf.set_text_color(*BLUE)
     pdf.cell(0, 9, "Splink Cohort Builder", align="C", ln=True)
@@ -1055,7 +1055,7 @@ def generate_report(
     truth_space_df:   Optional[pd.DataFrame] = None,
     crl_score:        Optional[dict] = None,
 ) -> bytes:
-    """Generate the complete SeRP-style PDF report.
+    """Generate the complete PDF Report.
 
     Sections in order:
       1. Cover page
@@ -1084,7 +1084,7 @@ def generate_report(
     lt      = run_config.get("linkage_type", "deterministic")
     fields  = run_config.get("selected_fields", [])
 
-    pdf = _SeRPReport(run_label=run_label)
+    pdf = _LinkageReport(run_label=run_label)
 
     _cover(pdf, run_config, run_label)
     _datasets_section(pdf, n_input_records, op_mode, fields, missingness_a, missingness_b)

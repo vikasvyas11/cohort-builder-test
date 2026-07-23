@@ -523,10 +523,11 @@ def compute_confusion_matrix(
             "unavailable": True,
             "unavailable_reason": (
                 "The confusion matrix requires a 'cluster' column in the dataset "
-                "as the ground-truth entity label. The uploaded dataset does not "
-                "contain this column. The confusion matrix is only available when "
-                "using the built-in fake1000 dummy dataset, which includes known "
-                "ground-truth cluster assignments."
+                "as the ground-truth entity label. This column was not found. "
+                "For uploaded datasets, ground truth is automatically assigned "
+                "when Dataset B is generated via 'Generate Dataset B'. "
+                "If you uploaded Dataset B separately, the confusion matrix "
+                "cannot be computed without an external ground-truth cluster column."
             ),
         }
 
@@ -705,6 +706,61 @@ def compute_intra_metrics(df_predict: pd.DataFrame, df_cluster: pd.DataFrame) ->
         con.sql(q_demographic_breakdown("df_cluster", "city")).df()
         if "city" in cluster_cols else pd.DataFrame()
     )
+
+    # ── Additional edge metrics (Feedback 2) ──────────────────────────────────
+    # Linkage rate: % of input records that appear in at least one edge
+    n_records = con.sql("SELECT COUNT(DISTINCT unique_id) FROM df_cluster").fetchone()[0]
+    n_with_edge = results["n_unique_ids"]
+    results["linkage_rate"] = round(100.0 * n_with_edge / n_records, 2) if n_records else 0.0
+
+    # Match weight percentiles (P10, P25, P75, P90)
+    if "match_weight" in df_predict.columns:
+        try:
+            pcts = con.sql("""
+                SELECT
+                    ROUND(PERCENTILE_CONT(0.10) WITHIN GROUP (ORDER BY match_weight), 4) AS p10,
+                    ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY match_weight), 4) AS p25,
+                    ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY match_weight), 4) AS p75,
+                    ROUND(PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY match_weight), 4) AS p90
+                FROM df_predict
+            """).df()
+            results["weight_percentiles"] = pcts
+        except Exception:
+            results["weight_percentiles"] = pd.DataFrame()
+    else:
+        results["weight_percentiles"] = pd.DataFrame()
+
+    # Additional cluster metrics (Feedback 2)
+    # Average, max, and median cluster size
+    try:
+        cluster_stats = con.sql("""
+            WITH sizes AS (
+                SELECT cluster_id, COUNT(*) AS n
+                FROM df_cluster
+                GROUP BY cluster_id
+            )
+            SELECT
+                ROUND(AVG(n), 2)    AS mean_cluster_size,
+                MAX(n)              AS max_cluster_size,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY n) AS median_cluster_size,
+                SUM(CASE WHEN n > 1 THEN 1 ELSE 0 END) AS multi_member_clusters,
+                ROUND(100.0 * SUM(CASE WHEN n > 1 THEN 1 ELSE 0 END)
+                      / COUNT(*), 2) AS pct_multi_member
+            FROM sizes
+        """).df()
+        results["cluster_stats"] = cluster_stats
+    except Exception:
+        results["cluster_stats"] = pd.DataFrame()
+
+    # Reduction ratio: fraction of O(n²) space searched via blocking
+    try:
+        n_total_records = con.sql("SELECT COUNT(*) FROM df_cluster").fetchone()[0]
+        max_possible = (n_total_records * (n_total_records - 1)) // 2
+        results["reduction_ratio"] = round(
+            100.0 * (1 - results["n_edges"] / max(max_possible, 1)), 2
+        )
+    except Exception:
+        results["reduction_ratio"] = None
 
     con.close()
     return results
