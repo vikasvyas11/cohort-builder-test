@@ -56,27 +56,34 @@ def page_configure() -> None:
         )
         blocking_toggles[field] = enabled
 
-    if not any(blocking_toggles.values()) and not st.session_state.get("composite_rules"):
-        st.error("At least one blocking rule must be enabled.")
+    has_single    = any(blocking_toggles.values())
+    has_composite = bool(st.session_state.get("composite_rules"))
+    if not has_single and not has_composite:
+        st.error("At least one blocking rule (single-field or composite) must be defined.")
         return
     st.session_state["blocking_toggles"] = blocking_toggles
     st.caption(f"Active rules: {', '.join(f for f, v in blocking_toggles.items() if v)}")
 
     with st.expander("Composite blocking rules (advanced)", expanded=False):
-        st.write("Combine two fields into one rule e.g. first_name AND dob.")
-        cb1, cb2, cb3 = st.columns([2, 2, 1])
+        st.write(
+            "Combine two or three fields into a single AND rule. "
+            "Composite-only configurations (no single-field rules toggled on) are valid."
+        )
+        cb1, cb2, cb3, cb4 = st.columns([2, 2, 2, 1])
         f1 = cb1.selectbox("Field 1", selected_fields, key="cb_f1")
         f2_opts = [f for f in selected_fields if f != f1]
-        if f2_opts:
-            f2 = cb2.selectbox("Field 2", f2_opts, key="cb_f2")
-        else:
-            f2 = None
-        if cb3.button("Add", key="cb_add") and f2:
-            st.session_state["composite_rules"][f"{f1}+{f2}"] = True
+        f2 = cb2.selectbox("Field 2", f2_opts, key="cb_f2") if f2_opts else None
+        f3_opts = ["(none)"] + [f for f in selected_fields if f not in (f1, f2)]
+        f3_sel  = cb3.selectbox("Field 3 (optional)", f3_opts, key="cb_f3")
+        f3 = None if f3_sel == "(none)" else f3_sel
+        if cb4.button("Add", key="cb_add") and f2:
+            rule_key = f"{f1}+{f2}" + (f"+{f3}" if f3 else "")
+            st.session_state["composite_rules"][rule_key] = True
         for key in list(st.session_state.get("composite_rules", {}).keys()):
             parts = key.split("+")
+            sql_parts = " AND ".join(f'l."{p}" = r."{p}"' for p in parts)
             cr1, cr2 = st.columns([4, 1])
-            cr1.code(f'l."{parts[0]}" = r."{parts[0]}" AND l."{parts[1]}" = r."{parts[1]}"')
+            cr1.code(sql_parts)
             if cr2.button("Remove", key=f"rm_{key}"):
                 del st.session_state["composite_rules"][key]
 

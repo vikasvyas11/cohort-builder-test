@@ -412,17 +412,14 @@ def page_eda() -> None:
             for col in usable_fields:
                 ftype = ftypes_a.get(col, "unknown")
                 # Sensible defaults by detected field type
-                default_pct = {
-                    "first_name": 14, "surname": 9, "full_name": 12,
-                    "dob": 5, "email": 15, "location": 11,
-                    "postcode": 8, "gender": 7,
-                }.get(ftype, 10)
+                # Default 0 so users explicitly choose which fields to corrupt
+                default_pct = 0
 
                 with st.container(border=True):
                     uc1, uc2 = st.columns([1, 2])
                     chk = uc1.checkbox(
                         f"`{col}` ({ftype})",
-                        value=st.session_state.get(f"up_chk_{col}", True),
+                        value=st.session_state.get(f"up_chk_{col}", False),
                         key=f"up_chk_{col}",
                     )
                     if chk:
@@ -665,8 +662,22 @@ def _commit_upload_state(
     if clean_b is not None and mode != "dedupe_only":
         df_b = _ensure_unique_id(clean_b, id_col_b, "B")
         df_b["source_dataset"] = "B"
+        # ── Assign cluster for Dataset B ──────────────────────────────────────
+        # For link_sample mode: the cluster was set in introduce_errors_for_sample
+        # BEFORE the _B suffix was appended to unique_id, so strip it to get the
+        # matching A-side cluster value.  For separately uploaded Dataset B files,
+        # use the raw unique_id (before suffixing) as the cluster label; this
+        # won't give a perfect ground truth but prevents the "unavailable" error.
+        if "cluster" not in df_b.columns:
+            # Use the pre-suffix unique_id as the cluster ground truth
+            df_b["cluster"] = df_b["unique_id"].astype(str).apply(
+                lambda x: x.replace("_B", "") if x.endswith("_B") else x
+            )
+        # Suffix unique_id AFTER capturing cluster so B IDs don't collide with A
         if not df_b["unique_id"].astype(str).str.endswith("_B").all():
             df_b["unique_id"] = df_b["unique_id"].astype(str) + "_B"
+        # For link_sample: the cluster stored in the sample equals the A unique_id
+        # (set before suffixing in introduce_errors_for_sample). No change needed.
 
     st.session_state["fakea"] = df_a
     st.session_state["fakeb"] = df_b

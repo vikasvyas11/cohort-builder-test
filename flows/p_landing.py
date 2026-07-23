@@ -2,13 +2,13 @@
 # Landing page — three mode cards: Standard, Upload Data, Advanced (JSON).
 
 import streamlit as st
-from modules.data_builder import build_datasets, get_library_status
+from modules.data_builder import build_datasets, get_library_status, load_nc_voter_dataset
 from utils.nav import _go_to
 from utils.state import clear_run_results
 
 
 def page_landing() -> None:
-    st.title("Splink Cohort Builder")
+    st.title("Cohort Builder")
     st.write(
         "Choose how you want to work. Standard mode walks you through every "
         "configuration step using the built-in fake1000 dataset. Upload mode "
@@ -33,24 +33,54 @@ def page_landing() -> None:
             with st.spinner("Building fake1000 dataset..."):
                 try:
                     _, fakea, fakeb = build_datasets()
-                    st.session_state["fakea"]        = fakea
-                    # Store fakeb in a staging key: page_operation() will copy
-                    # it to "fakeb" only if the user chooses link+deduplicate.
-                    # This restores the explicit user choice before committing.
-                    st.session_state["std_fakeb"]    = fakeb
-                    st.session_state["fakeb"]        = None   # start as None
+                    st.session_state["fakea"]         = fakea
+                    st.session_state["std_fakeb"]     = fakeb
+                    st.session_state["fakeb"]         = None
                     st.session_state["dataset_ready"] = True
-                    st.session_state["flow"]         = "standard"
+                    st.session_state["flow"]          = "standard"
                     libs = get_library_status()
                     if not libs["gender_guesser"]:
-                        st.warning("gender-guesser not installed: random gender used. "
-                                   "pip install gender-guesser for name inference.")
+                        st.warning("gender-guesser not installed: random gender used.")
                     if not libs["pgeocode"]:
-                        st.warning("pgeocode not installed: synthetic postcodes used. "
-                                   "pip install pgeocode for real UK postcodes.")
+                        st.warning("pgeocode not installed: synthetic postcodes used.")
                     st.success("Dataset loaded.")
                 except Exception as e:
                     st.error(f"Failed to build dataset: {e}")
+
+        st.divider()
+        if st.button("Use NC Voter Data (200k rows)", use_container_width=True):
+            with st.spinner("Downloading voter_registry.csv from GitHub and running EDA…"):
+                try:
+                    nc_df, nc_field_types, nc_eda_log = load_nc_voter_dataset(max_rows=200_000)
+                    st.session_state["fakea"]         = nc_df
+                    st.session_state["std_fakeb"]     = None   # no history file; user picks link mode
+                    st.session_state["fakeb"]         = None
+                    st.session_state["dataset_ready"] = True
+                    st.session_state["flow"]          = "standard"
+                    # Pre-configure fields: prefer linkage-relevant columns
+                    all_cols = [c for c in nc_df.columns
+                                if c not in ("unique_id", "source_dataset", "cluster")]
+                    priority = ("ncid", "voter_reg_num", "last_name", "first_name",
+                                "birth_year", "zip_code", "county_desc", "race_code",
+                                "gender_code", "registr_dt")
+                    sel = [f for f in priority if f in all_cols] + \
+                          [f for f in all_cols if f not in priority]
+                    sel = sel[:12]
+                    st.session_state["selected_fields"]  = sel
+                    st.session_state["blocking_toggles"] = {
+                        f: (f in ("ncid", "voter_reg_num", "last_name", "first_name"))
+                        for f in sel
+                    }
+                    summ = nc_eda_log.get("summary", {})
+                    st.success(
+                        f"NC voter data loaded and cleaned: "
+                        f"{summ.get('final_rows', len(nc_df)):,} records "
+                        f"(removed {summ.get('rows_removed', 0):,} during EDA). "
+                        "Suggested blocking: ncid / voter_reg_num. "
+                        "Choose 'Deduplication only' or generate a sample in Operation Mode."
+                    )
+                except Exception as e:
+                    st.error(f"NC data load failed: {e}")
 
     # ── Upload mode ───────────────────────────────────────────────────────────
     with col_up:
