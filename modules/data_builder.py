@@ -338,37 +338,29 @@ def load_nc_voter_dataset(max_rows: int = 200_000) -> tuple:
 
 
 def load_nc_voter_dataset(max_rows: int = 200_000) -> tuple:
-    """Load voter_registry.csv from the same directory as the app.
+    """Load voter_registry.csv from the repo root, run the same EDA pipeline
+    as the Upload flow, and return (df_clean, field_types, eda_log).
 
-    Strategy (in order):
-      1. Look for voter_registry.csv relative to this file's parent directory
-         (works when running locally or on Streamlit Cloud where the repo is
-         cloned to /mount/src/<repo-name>/).
-      2. If not found, fall back to reading via urllib from the Streamlit
-         Cloud mount path as a last resort.
-
-    Runs the same EDA pipeline as the Upload flow so data is cleaned
-    identically. Returns (df_clean, field_types, eda_log).
+    Empty-string cells (produced when dtype=str is used for reading CSVs) are
+    converted to NaN BEFORE EDA so that fully-null column removal works
+    correctly for large sparse government datasets like NC voter registry.
     """
     import io
     import os
     from pathlib import Path
     from modules.eda_engine import run_full_eda
 
-    # ── Locate the file ───────────────────────────────────────────────────────
-    # __file__ is modules/data_builder.py, so parent is modules/, parent.parent is repo root
-    repo_root   = Path(__file__).resolve().parent.parent
-    local_path  = repo_root / "voter_registry.csv"
+    # ── Locate voter_registry.csv ─────────────────────────────────────────────
+    # modules/data_builder.py lives one level below the repo root
+    repo_root  = Path(__file__).resolve().parent.parent
+    local_path = repo_root / "voter_registry.csv"
 
     raw_bytes = None
-
     if local_path.exists():
-        # Local / Streamlit Cloud: file is on disk alongside app.py
         with open(local_path, "rb") as fh:
             raw_bytes = fh.read()
     else:
-        # Last resort: try reading from the Streamlit Cloud /mount/src path
-        # (Streamlit Cloud clones the repo to /mount/src/<repo-name>/)
+        # Streamlit Cloud clones to /mount/src/<repo-name>/
         mount_candidates = list(Path("/mount/src").glob("*/voter_registry.csv"))
         if mount_candidates:
             with open(mount_candidates[0], "rb") as fh:
@@ -377,12 +369,12 @@ def load_nc_voter_dataset(max_rows: int = 200_000) -> tuple:
     if raw_bytes is None:
         raise RuntimeError(
             "voter_registry.csv not found. "
-            f"Expected location: {local_path}. "
-            "Make sure voter_registry.csv is committed to the root of your repository "
-            "(same folder as app.py), then redeploy on Streamlit Cloud."
+            f"Expected: {local_path}. "
+            "Ensure the file is committed to the root of your repository "
+            "(same folder as app.py) and redeployed on Streamlit Cloud."
         )
 
-    # ── Parse — try comma, tab, semicolon ────────────────────────────────────
+    # ── Parse — try comma, tab, semicolon, pipe ───────────────────────────────
     df_raw = None
     for sep in (",", "\t", ";", "|"):
         try:
@@ -399,8 +391,14 @@ def load_nc_voter_dataset(max_rows: int = 200_000) -> tuple:
     if df_raw is None or df_raw.empty:
         raise RuntimeError(
             "voter_registry.csv was found but could not be parsed. "
-            "Check that it is a valid CSV, TSV, or pipe-delimited file."
+            "Check it is a valid CSV, TSV, or pipe-delimited file."
         )
+
+    # ── Convert empty strings → NaN BEFORE EDA ───────────────────────────────
+    # When dtype=str is used, missing cells arrive as "" not NaN.
+    # run_full_eda uses isna() to detect nulls, so empty strings bypass
+    # null-column and null-row removal entirely.  Replace them first.
+    df_raw = df_raw.replace("", pd.NA)
 
     # ── Run the same EDA pipeline as the Upload flow ──────────────────────────
     df_clean, field_types, _, eda_log = run_full_eda(df_raw.copy())
@@ -408,25 +406,23 @@ def load_nc_voter_dataset(max_rows: int = 200_000) -> tuple:
     # ── Assign Splink-required columns ────────────────────────────────────────
     df_clean["source_dataset"] = "A"
 
+    # unique_id: use ncid or voter_reg_num if present after EDA name cleaning
     uid_assigned = False
-    for candidate in ("ncid", "voter_reg_num", "id", "unique_id"):
-        if candidate in df_clean.columns and candidate != "unique_id":
-            df_clean["unique_id"] = df_clean[candidate].astype(str)
+    for candidate in ("ncid", "voter_reg_num", "unique_id"):
+        if candidate in df_clean.columns:
+            if candidate != "unique_id":
+                df_clean["unique_id"] = df_clean[candidate].astype(str)
             uid_assigned = True
             break
-    if "unique_id" in df_clean.columns and not uid_assigned:
-        uid_assigned = True   # column already exists with that name
     if not uid_assigned:
         df_clean.insert(0, "unique_id",
                         "NC_" + pd.Series(range(len(df_clean))).astype(str))
 
-    # ── Ground-truth cluster: same ncid = same person ─────────────────────────
-    if "ncid" in df_clean.columns:
-        df_clean["cluster"] = df_clean["ncid"].astype(str)
-    elif "voter_reg_num" in df_clean.columns:
-        df_clean["cluster"] = df_clean["voter_reg_num"].astype(str)
-    else:
-        df_clean["cluster"] = df_clean["unique_id"].astype(str)
+    # ── Ground-truth cluster col ──────────────────────────────────────────────
+    for gt_col in ("ncid", "voter_reg_num", "unique_id"):
+        if gt_col in df_clean.columns:
+            df_clean["cluster"] = df_clean[gt_col].astype(str)
+            break
 
     return df_clean, field_types, eda_log
 
