@@ -57,18 +57,26 @@ def page_landing() -> None:
                     st.session_state["fakeb"]         = None
                     st.session_state["dataset_ready"] = True
                     st.session_state["flow"]          = "standard"
-                    # Pre-configure fields: prefer linkage-relevant columns
-                    all_cols = [c for c in nc_df.columns
-                                if c not in ("unique_id", "source_dataset", "cluster")]
-                    priority = ("ncid", "voter_reg_num", "last_name", "first_name",
-                                "birth_year", "zip_code", "county_desc", "race_code",
-                                "gender_code", "registr_dt")
-                    sel = [f for f in priority if f in all_cols] + \
-                          [f for f in all_cols if f not in priority]
-                    sel = sel[:12]
-                    st.session_state["selected_fields"]  = sel
+                    # Build selected_fields from EDA-inferred field types so
+                    # they always reflect actual cleaned column names, not
+                    # hardcoded guesses that may not survive name normalisation.
+                    EXCLUDE = {"unique_id", "source_dataset", "cluster"}
+                    TYPE_PRIORITY = {
+                        "first_name": 0, "surname": 1, "dob": 2,
+                        "postcode": 3, "email": 4, "location": 5,
+                        "gender": 6, "text": 7, "id": 99,
+                    }
+                    scored = sorted(
+                        [(TYPE_PRIORITY.get(nc_field_types.get(c, "text"), 7), c)
+                         for c in nc_df.columns if c not in EXCLUDE],
+                        key=lambda x: x[0],
+                    )
+                    sel = [c for _, c in scored][:12]
+                    HIGH_SEL_TYPES = {"first_name", "surname", "dob", "postcode", "email"}
+                    st.session_state["selected_fields"] = sel
                     st.session_state["blocking_toggles"] = {
-                        f: (f in ("ncid", "voter_reg_num", "last_name", "first_name"))
+                        f: (nc_field_types.get(f, "text") in HIGH_SEL_TYPES
+                            or f in ("ncid", "voter_reg_num"))
                         for f in sel
                     }
                     summ = nc_eda_log.get("summary", {})
