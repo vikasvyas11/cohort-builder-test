@@ -338,42 +338,56 @@ def load_nc_voter_dataset(max_rows: int = 200_000) -> tuple:
 
 
 def load_nc_voter_dataset(max_rows: int = 200_000) -> tuple:
-    """Stream the NC voter registry CSV from the repo's main branch on GitHub.
+    """Load voter_registry.csv from the same directory as the app.
 
-    The file voter_registry.csv lives in the root of the main branch.
-    Only the first max_rows rows are loaded to stay within memory limits.
-    Returns (fakea, fakeb) where:
-      fakea = voter registration records (Dataset A)
-      fakeb = None   (the caller at page_operation() will decide whether to link)
+    Strategy (in order):
+      1. Look for voter_registry.csv relative to this file's parent directory
+         (works when running locally or on Streamlit Cloud where the repo is
+         cloned to /mount/src/<repo-name>/).
+      2. If not found, fall back to reading via urllib from the Streamlit
+         Cloud mount path as a last resort.
 
-    After loading, the full EDA pipeline from eda_engine.run_full_eda() is run
-    so the NC data goes through identical cleaning to uploaded datasets.
+    Runs the same EDA pipeline as the Upload flow so data is cleaned
+    identically. Returns (df_clean, field_types, eda_log).
     """
     import io
-    import urllib.request
+    import os
+    from pathlib import Path
     from modules.eda_engine import run_full_eda
 
-    # Raw URL for the CSV in the main branch of the GitHub repo
-    GITHUB_RAW_URL = (
-        "https://github.com/vikasvyas11/cohort-builder-test/blob/main/voter_registry.csv"
-    )
+    # ── Locate the file ───────────────────────────────────────────────────────
+    # __file__ is modules/data_builder.py, so parent is modules/, parent.parent is repo root
+    repo_root   = Path(__file__).resolve().parent.parent
+    local_path  = repo_root / "voter_registry.csv"
 
-    try:
-        with urllib.request.urlopen(GITHUB_RAW_URL, timeout=60) as resp:
-            raw = resp.read()
-    except Exception as exc:
+    raw_bytes = None
+
+    if local_path.exists():
+        # Local / Streamlit Cloud: file is on disk alongside app.py
+        with open(local_path, "rb") as fh:
+            raw_bytes = fh.read()
+    else:
+        # Last resort: try reading from the Streamlit Cloud /mount/src path
+        # (Streamlit Cloud clones the repo to /mount/src/<repo-name>/)
+        mount_candidates = list(Path("/mount/src").glob("*/voter_registry.csv"))
+        if mount_candidates:
+            with open(mount_candidates[0], "rb") as fh:
+                raw_bytes = fh.read()
+
+    if raw_bytes is None:
         raise RuntimeError(
-            f"Could not download voter_registry.csv from GitHub.\n"
-            f"URL tried: {GITHUB_RAW_URL}\n"
-            f"Details: {exc}"
+            "voter_registry.csv not found. "
+            f"Expected location: {local_path}. "
+            "Make sure voter_registry.csv is committed to the root of your repository "
+            "(same folder as app.py), then redeploy on Streamlit Cloud."
         )
 
-    # Parse — try comma first, then tab
+    # ── Parse — try comma, tab, semicolon ────────────────────────────────────
     df_raw = None
-    for sep in (",", "\t", ";"):
+    for sep in (",", "\t", ";", "|"):
         try:
             candidate = pd.read_csv(
-                io.BytesIO(raw), sep=sep, nrows=max_rows,
+                io.BytesIO(raw_bytes), sep=sep, nrows=max_rows,
                 dtype=str, encoding="latin-1", on_bad_lines="skip",
             )
             if candidate.shape[1] > 1:
@@ -383,23 +397,25 @@ def load_nc_voter_dataset(max_rows: int = 200_000) -> tuple:
             continue
 
     if df_raw is None or df_raw.empty:
-        raise RuntimeError("voter_registry.csv could not be parsed as CSV or TSV.")
+        raise RuntimeError(
+            "voter_registry.csv was found but could not be parsed. "
+            "Check that it is a valid CSV, TSV, or pipe-delimited file."
+        )
 
-    # ── Run the same EDA pipeline used for uploaded datasets ─────────────────
-    # This standardises column names, removes nulls, deduplicates, cleans text,
-    # and standardises dates — identical to what the Upload flow does.
+    # ── Run the same EDA pipeline as the Upload flow ──────────────────────────
     df_clean, field_types, _, eda_log = run_full_eda(df_raw.copy())
 
     # ── Assign Splink-required columns ────────────────────────────────────────
     df_clean["source_dataset"] = "A"
 
-    # unique_id: prefer ncid or voter_reg_num
     uid_assigned = False
-    for candidate in ("ncid", "voter_reg_num"):
-        if candidate in df_clean.columns:
+    for candidate in ("ncid", "voter_reg_num", "id", "unique_id"):
+        if candidate in df_clean.columns and candidate != "unique_id":
             df_clean["unique_id"] = df_clean[candidate].astype(str)
             uid_assigned = True
             break
+    if "unique_id" in df_clean.columns and not uid_assigned:
+        uid_assigned = True   # column already exists with that name
     if not uid_assigned:
         df_clean.insert(0, "unique_id",
                         "NC_" + pd.Series(range(len(df_clean))).astype(str))
@@ -407,6 +423,8 @@ def load_nc_voter_dataset(max_rows: int = 200_000) -> tuple:
     # ── Ground-truth cluster: same ncid = same person ─────────────────────────
     if "ncid" in df_clean.columns:
         df_clean["cluster"] = df_clean["ncid"].astype(str)
+    elif "voter_reg_num" in df_clean.columns:
+        df_clean["cluster"] = df_clean["voter_reg_num"].astype(str)
     else:
         df_clean["cluster"] = df_clean["unique_id"].astype(str)
 
